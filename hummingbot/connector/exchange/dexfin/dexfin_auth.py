@@ -1,4 +1,3 @@
-import base64
 from datetime import datetime
 import hashlib
 import hmac
@@ -20,15 +19,6 @@ class DexfinAuth:
     def keysort(dictionary: Dict[str, str]) -> Dict[str, str]:
         return OrderedDict(sorted(dictionary.items(), key=lambda t: t[0]))
 
-    def third_party_header(self, timestamp: str):
-        partner_payload = timestamp + self.partner_id + self.api_key
-        partner_signature = base64.b64encode(hmac.new(self.partner_key.encode("utf-8"), partner_payload.encode("utf-8"), hashlib.sha256).digest())
-        third_party = {
-            "KC-API-PARTNER": self.partner_id,
-            "KC-API-PARTNER-SIGN": str(partner_signature, "utf-8")
-        }
-        return third_party
-
     def add_auth_to_params(self,
                            method: str,
                            path_url: str,
@@ -40,7 +30,6 @@ class DexfinAuth:
         request = {
             "X-Auth-Apikey": self.api_key,
             "X-Auth-Nonce": str(timestamp),
-            "Application-Type": "application/json",
             "Content-Type": "application/json"
         }
 
@@ -50,7 +39,4 @@ class DexfinAuth:
             hashlib.sha256).hexdigest()
 
         request["X-Auth-Signature"] = signature
-        if partner_header:
-            headers = self.third_party_header(str(timestamp))
-            request.update(headers)
         return request
