@@ -89,9 +89,9 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     @staticmethod
     async def get_snapshot(client: aiohttp.ClientSession, trading_pair: str, limit: int = 1000) -> Dict[str, Any]:
-        params: Dict = {"limit": str(limit), "symbol": convert_to_exchange_trading_pair(trading_pair)} if limit != 0 \
+        params: Dict = {"limit": str(limit), "market": convert_to_exchange_trading_pair(trading_pair)} if limit != 0 \
             else {"symbol": convert_to_exchange_trading_pair(trading_pair)}
-        async with client.get(SNAPSHOT_REST_URL.format(params["symbol"]), params=params) as response:
+        async with client.get(SNAPSHOT_REST_URL.format(params["market"]), params=params) as response:
             response: aiohttp.ClientResponse = response
             if response.status != 200:
                 raise IOError(f"Error fetching Dexfin market snapshot for {trading_pair}. "
@@ -139,17 +139,6 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
         finally:
             await ws.close()
 
-    # get required data to create a websocket request
-    async def ws_connect_data(self):
-        async with aiohttp.ClientSession() as session:
-            async with session.post('https://api.dexfin.com/api/v1/bullet-public', data=b'') as resp:
-                response: aiohttp.ClientResponse = resp
-                if response.status != 200:
-                    raise IOError(f"Error fetching Dexfin websocket connection data."
-                                  f"HTTP status is {response.status}.")
-                data: Dict[str, Any] = await response.json()
-                return data
-
     async def listen_for_trades(self, ev_loop: asyncio.BaseEventLoop, output: asyncio.Queue):
         while True:
             try:
@@ -166,7 +155,8 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
                         msg = ujson.loads(raw_msg)
                         market, topic = msg.keys()[0].split('.')
                         for trade in msg[f"{market}.{topic}"][topic]:
-                            trade_msg: OrderBookMessage = DexfinOrderBook.trade_message_from_exchange(trade, metadata={"market": market})
+                            trade_msg: OrderBookMessage = DexfinOrderBook.trade_message_from_exchange(
+                                trade, metadata={"symbol": market})
                             output.put_nowait(trade_msg)
             except asyncio.CancelledError:
                 raise
@@ -178,9 +168,12 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
     async def listen_for_order_book_diffs(self, ev_loop: asyncio.BaseEventLoop, output: asyncio.Queue):
         while True:
             try:
-                ws_path: str = "&".join([f"stream={convert_to_exchange_trading_pair(trading_pair).lower()}.ob-inc" for trading_pair in self._trading_pairs])
-                stream_url: str = f"{DIFF_STREAM_URL}?{ws_path}"
+                converted_pairs = []
+                for trading_pair in self._trading_pairs:
+                    converted_pairs.append(convert_to_exchange_trading_pair(trading_pair).lower())
 
+                ws_path: str = "&".join([f"stream={trading_pair}.ob-inc" for trading_pair in converted_pairs])
+                stream_url: str = f"{DIFF_STREAM_URL}?{ws_path}"
                 async with websockets.connect(stream_url) as ws:
                     ws: websockets.WebSocketClientProtocol = ws
                     async for raw_msg in self._inner_messages(ws):
@@ -190,7 +183,7 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
                             continue
                         obook = msg[f"{market}.{topic}"]
                         order_book_message: OrderBookMessage = DexfinOrderBook.diff_message_from_exchange(
-                            obook, time.time(), metadata={"market": market})
+                            obook, time.time(), metadata={"symbol": market})
                         output.put_nowait(order_book_message)
             except asyncio.CancelledError:
                 raise
