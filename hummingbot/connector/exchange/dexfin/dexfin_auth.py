@@ -1,4 +1,4 @@
-from datetime import datetime
+import time
 import hashlib
 import hmac
 from typing import (
@@ -24,18 +24,16 @@ class DexfinAuth:
                            path_url: str,
                            args: Dict[str, Any] = None,
                            partner_header: bool = False) -> Dict[str, Any]:
-
-        now = datetime.utcnow()
-        timestamp = int(datetime.timestamp(now) * 1e3)
+        nonce = int(time.time() * 1e3)
         request = {
             "X-Auth-Apikey": self.api_key,
-            "X-Auth-Nonce": str(timestamp),
+            "X-Auth-Nonce": str(nonce),
             "Content-Type": "application/json"
         }
 
         signature = hmac.new(
             self.secret_key.encode("utf-8"),
-            f"{timestamp}{self.api_key}".encode("utf-8"),
+            f"{nonce}{self.api_key}".encode("utf-8"),
             hashlib.sha256).hexdigest()
 
         request["X-Auth-Signature"] = signature
