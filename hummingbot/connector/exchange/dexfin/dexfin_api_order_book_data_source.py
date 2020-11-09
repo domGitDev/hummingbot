@@ -163,7 +163,7 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     ws: websockets.WebSocketClientProtocol = ws
                     async for raw_msg in self._inner_messages(ws):
                         msg = ujson.loads(raw_msg)
-                        market, topic = None
+                        market, topic = None, None
                         for item in msg.items():
                             if "trades" in item[0]:
                                 market, topic = item[0].split('.')
