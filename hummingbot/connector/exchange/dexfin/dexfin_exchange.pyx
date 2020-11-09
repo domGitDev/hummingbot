@@ -230,7 +230,7 @@ cdef class DexfinExchange(ExchangeBase):
 
     async def check_network(self) -> NetworkStatus:
         try:
-            await self._api_request(method="get", path_url="/api/v2/peatio/public/timestamp")
+            await self._api_request(method="get", path_url="/api/v2/peatio/public/health/alive")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -627,7 +627,7 @@ cdef class DexfinExchange(ExchangeBase):
         side = "buy" if is_buy else "sell"
         order_type_str = "limit" if order_type is OrderType.LIMIT_MAKER else "market"
         params = {
-            "size": str(amount),
+            "volume": str(amount),
             "side": side,
             "market": trading_pair,
             "ord_type": order_type_str,
