@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import asyncio
-import aiohttp
 import logging
 import time
 from typing import (
@@ -17,11 +16,11 @@ from hummingbot.connector.exchange.dexfin.dexfin_auth import DexfinAuth
 from hummingbot.logger import HummingbotLogger
 
 DEXFIN_API_ENDPOINT = "https://api.dexfin.com"
-DEXFIN_USER_STREAM_ENDPOINT = "/api/v1/bullet-private"
+USER_STREAM_ENDPOINT = "wss://test.dexfin.dev/api/v2/ranger/public"
 
 DEXFIN_PRIVATE_TOPICS = [
-    "/spotMarket/tradeOrders",
-    "/account/balance",
+    "order",
+    "trade",
 ]
 
 
@@ -49,36 +48,25 @@ class DexfinAPIUserStreamDataSource(UserStreamTrackerDataSource):
         return self._last_recv_time
 
     async def get_listen_key(self):
-        async with aiohttp.ClientSession() as client:
-            header = self._dexfin_auth.add_auth_to_params("POST", DEXFIN_USER_STREAM_ENDPOINT)
-            async with client.post(f"{DEXFIN_API_ENDPOINT}{DEXFIN_USER_STREAM_ENDPOINT}", headers=header) as response:
-                response: aiohttp.ClientResponse = response
-                if response.status != 200:
-                    raise IOError(f"Error fetching Dexfin user stream listen key. HTTP status is {response.status}.")
-                data: Dict[str, str] = await response.json()
-                return data
+        pass
 
     async def _subscribe_topic(self, ws: websockets.WebSocketClientProtocol) -> AsyncIterable[str]:
         try:
-            for topic in DEXFIN_PRIVATE_TOPICS:
-                subscribe_request = {
-                    "id": int(time.time()),
-                    "type": "subscribe",
-                    "topic": topic,
-                    "privateChannel": True,
-                    "response": True}
-                await ws.send(ujson.dumps(subscribe_request))
+            subscribe_request = {"event": "subscribe", "streams": DEXFIN_PRIVATE_TOPICS}
+            await ws.send(ujson.dumps(subscribe_request))
         except asyncio.CancelledError:
             raise
         except Exception:
             return
 
     async def get_ws_connection(self) -> websockets.WebSocketClientProtocol:
-        stream_url: str = f"{self._current_endpoint}?token={self._current_listen_key}&acceptUserMessage=true"
-        self.logger().info(f"Connecting to {stream_url}.")
+        ws_path: str = "&".join([f"stream={priv_topic}" for priv_topic in DEXFIN_PRIVATE_TOPICS])
+        stream_url: str = f"{USER_STREAM_ENDPOINT}?{ws_path}"
+        headers = self._dexfin_auth.add_auth_to_params("get", "")
+        logging.info(f"Connecting to PRIVATE {stream_url}")
 
         # Create the WS connection.
-        return websockets.connect(stream_url, ping_interval=40, ping_timeout=self.PING_TIMEOUT)
+        return websockets.connect(stream_url, ping_interval=40, ping_timeout=self.PING_TIMEOUT, extra_headers=headers)
 
     async def _inner_messages(self, ws: websockets.WebSocketClientProtocol) -> AsyncIterable[str]:
         try:
@@ -91,19 +79,14 @@ class DexfinAPIUserStreamDataSource(UserStreamTrackerDataSource):
             self._current_listen_key = None
 
     async def listen_for_user_stream(self, ev_loop: asyncio.BaseEventLoop, output: asyncio.Queue):
+        ws = None
         while True:
             try:
-                if self._current_listen_key is None:
-                    creds = await self.get_listen_key()
-                    self._current_listen_key = creds["data"]["token"]
-                    self._current_endpoint = creds["data"]["instanceServers"][0]["endpoint"]
-                    self.logger().debug(f"Obtained listen key {self._current_listen_key}.")
-
-                    async with (await self.get_ws_connection()) as ws:
-                        await self._subscribe_topic(ws)
-                        async for msg in self._inner_messages(ws):
-                            decoded: Dict[str, any] = ujson.loads(msg)
-                            output.put_nowait(decoded)
+                async with (await self.get_ws_connection()) as ws:
+                    # await self._subscribe_topic(DEXFIN_PRIVATE_TOPICS)
+                    async for msg in self._inner_messages(ws):
+                        decoded: Dict[str, any] = ujson.loads(msg)
+                        output.put_nowait(decoded)
 
             except asyncio.CancelledError:
                 raise
@@ -111,5 +94,6 @@ class DexfinAPIUserStreamDataSource(UserStreamTrackerDataSource):
                 self.logger().error("Unexpected error while maintaining the user event listen key. Retrying after "
                                     "5 seconds...", exc_info=False)
                 self._current_listen_key = None
-                await ws.close()
+                if ws:
+                    await ws.close()
                 await asyncio.sleep(5)

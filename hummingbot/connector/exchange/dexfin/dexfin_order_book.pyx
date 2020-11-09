@@ -36,11 +36,12 @@ cdef class DexfinOrderBook(OrderBook):
                                        metadata: Optional[Dict] = None) -> OrderBookMessage:
         if metadata:
             msg.update(metadata)
+        ts = timestamp
         return DexfinOrderBookMessage(OrderBookMessageType.SNAPSHOT, {
-            "trading_pair": msg["symbol"],
-            "update_id": int(msg["data"]["sequence"]),
-            "bids": msg["data"]["bids"],
-            "asks": msg["data"]["asks"]
+            "trading_pair": metadata["trading_pair"],
+            "update_id": int(ts),
+            "bids": msg.get("bids", []),
+            "asks": msg.get("asks", [])
         }, timestamp=timestamp)
 
     @classmethod
@@ -50,11 +51,12 @@ cdef class DexfinOrderBook(OrderBook):
                                    metadata: Optional[Dict] = None) -> OrderBookMessage:
         if metadata:
             msg.update(metadata)
+        ts = timestamp
         return DexfinOrderBookMessage(OrderBookMessageType.DIFF, {
-            "trading_pair": msg["data"]["symbol"],
-            "update_id": msg["data"]["sequenceEnd"],
-            "bids": msg["data"]["changes"]["bids"],
-            "asks": msg["data"]["changes"]["asks"]
+            "trading_pair": metadata["trading_pair"],
+            "update_id": int(ts),
+            "bids": msg.get("bids", []),
+            "asks": msg.get("asks", [])
         }, timestamp=timestamp)
 
     @classmethod
@@ -64,23 +66,23 @@ cdef class DexfinOrderBook(OrderBook):
         if metadata:
             msg.update(metadata)
         return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
-            "trading_pair": msg["symbol"],
+            "trading_pair": metadata["trading_pair"],
             "update_id": int(ts),
-            "bids": msg["data"]["bids"],
-            "asks": msg["data"]["asks"]
+            "bids": msg.get("bids", []),
+            "asks": msg.get("asks", [])
         }, timestamp=record["timestamp"] * 1e-3)
 
     @classmethod
     def diff_message_from_db(cls, record: RowProxy, metadata: Optional[Dict] = None) -> OrderBookMessage:
-        ts = record["timestamp"]
         msg = ujson.loads(record["json"])  # Dexfin json in DB is TEXT
         if metadata:
             msg.update(metadata)
+        ts = record["timestamp"]
         return OrderBookMessage(OrderBookMessageType.DIFF, {
-            "trading_pair": msg["symbol"],
+            "trading_pair": metadata["trading_pair"],
             "update_id": ts,
-            "bids": msg["data"]["bids"],
-            "asks": msg["data"]["asks"]
+            "bids": msg.get("bids", []),
+            "asks": msg.get("asks", [])
         }, timestamp=record["timestamp"] * 1e-3)
 
     @classmethod
@@ -90,10 +92,10 @@ cdef class DexfinOrderBook(OrderBook):
         if metadata:
             msg.update(metadata)
         return OrderBookMessage(OrderBookMessageType.SNAPSHOT, {
-            "trading_pair": msg["symbol"],
+            "trading_pair": metadata["trading_pair"],
             "update_id": ts,
-            "bids": msg["data"]["bids"],
-            "asks": msg["data"]["asks"]
+            "bids": msg.get("bids", []),
+            "asks": msg.get("asks", [])
         }, timestamp=record.timestamp * 1e-3)
 
     @classmethod
@@ -102,10 +104,10 @@ cdef class DexfinOrderBook(OrderBook):
         if metadata:
             msg.update(metadata)
         return OrderBookMessage(OrderBookMessageType.DIFF, {
-            "trading_pair": msg["symbol"],
+            "trading_pair": metadata["trading_pair"],
             "update_id": record.timestamp,
-            "bids": msg["data"]["bids"],
-            "asks": msg["data"]["asks"]
+            "bids": msg.get("bids", []),
+            "asks": msg.get("asks", [])
 
         }, timestamp=record.timestamp * 1e-3)
 
@@ -115,13 +117,13 @@ cdef class DexfinOrderBook(OrderBook):
         if metadata:
             msg.update(metadata)
         return OrderBookMessage(OrderBookMessageType.TRADE, {
-            "trading_pair": msg["symbol"],
+            "trading_pair": metadata["trading_pair"],
             "trade_type": float(TradeType.BUY.value) if msg["side"] == "buy"
             else float(TradeType.SELL.value),
-            "trade_id": msg["tradeId"],
+            "trade_id": msg["tid"],
             "update_id": msg["sequence"],
             "price": msg["price"],
-            "amount": msg["size"]
+            "amount": msg["amount"]
         }, timestamp=record.timestamp * 1e-9)
 
     @classmethod
@@ -129,13 +131,13 @@ cdef class DexfinOrderBook(OrderBook):
         if metadata:
             msg.update(metadata)
         return OrderBookMessage(OrderBookMessageType.TRADE, {
-            "trading_pair": msg["symbol"],
+            "trading_pair": metadata["trading_pair"],
             "trade_type": float(TradeType.BUY.value) if msg["side"] == "buy"
             else float(TradeType.SELL.value),
-            "trade_id": msg["tradeId"],
+            "trade_id": msg["tid"],
             "update_id": msg["sequence"],
             "price": msg["price"],
-            "amount": msg["size"]
+            "amount": msg["amount"]
         }, timestamp=(int(msg["time"]) * 1e-9))
 
     @classmethod

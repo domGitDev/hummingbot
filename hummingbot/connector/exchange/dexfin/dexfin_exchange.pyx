@@ -50,6 +50,8 @@ from hummingbot.connector.trading_rule cimport TradingRule
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 from hummingbot.core.utils.estimate_fee import estimate_fee
+from hummingbot.connector.exchange.dexfin.dexfin_utils import convert_to_exchange_trading_pair
+from hummingbot.connector.exchange.dexfin.dexfin_utils import convert_from_exchange_trading_pair
 
 km_logger = None
 s_decimal_0 = Decimal(0)
@@ -269,23 +271,31 @@ cdef class DexfinExchange(ExchangeBase):
     async def _user_stream_event_listener(self):
         async for event_message in self._iter_user_event_queue():
             try:
-                event_type = event_message.keys()[0]
-                symbol, event_topic = event_type.split('.')
-                execution_data = event_message[f"{symbol}.{event_topic}"][event_topic]
-
-                # Refer to https://www.openware.com/sdk/docs/peatio/api/websocket-api.html
-                if event_topic == "order":
-                    execution_status = execution_data["state"]
-                    execution_type = execution_data["ord_type"]
-                    client_order_id = execution_data["id"]
-
-                    tracked_order = self._in_flight_orders.get(client_order_id)
-
-                    if tracked_order is None:
-                        self.logger().debug(f"Unrecognized order ID from user stream: {client_order_id}.")
-                        self.logger().debug(f"Event: {event_message}")
+                success = False
+                for item in event_message.items():
+                    event_type = item[0]
+                    if "success" in item[0] or "unsucess" in item[0]:
                         continue
-                else:
+                    self.logger().info(f"EVENT TYPE: {item[0]}")
+                    symbol, event_topic = event_type.split('.')
+                    execution_data = event_message[f"{symbol}.{event_topic}"][event_topic]
+
+                    # Refer to https://www.openware.com/sdk/docs/peatio/api/websocket-api.html
+                    if event_topic == "order":
+                        execution_status = execution_data["state"]
+                        execution_type = execution_data["ord_type"]
+                        client_order_id = execution_data["id"]
+
+                        tracked_order = self._in_flight_orders.get(client_order_id)
+
+                        if tracked_order is None:
+                            self.logger().debug(f"Unrecognized order ID from user stream: {client_order_id}.")
+                            self.logger().debug(f"Event: {event_message}")
+                        success = True
+                        break
+                    else:
+                        success = False
+                if not success:
                     continue
 
                 if execution_status != "done":
@@ -460,11 +470,11 @@ cdef class DexfinExchange(ExchangeBase):
 
         for info in raw_trading_pair_info:
             try:
+                trading_pair = convert_from_exchange_trading_pair(info["id"].upper())
                 min_price_increment = Decimal(f"1e-{info.get('price_precision')}")
                 min_base_amount_increment = Decimal(f"1e-{info.get('amount_precision')}")
-
                 trading_rules.append(
-                    TradingRule(trading_pair=info["name"],
+                    TradingRule(trading_pair=trading_pair,
                                 min_order_size=Decimal(info["min_amount"]),
                                 min_price_increment=min_price_increment,
                                 min_base_amount_increment=min_base_amount_increment)
@@ -474,7 +484,7 @@ cdef class DexfinExchange(ExchangeBase):
         return trading_rules
 
     async def get_order_status(self, exchange_order_id: str) -> Dict[str, Any]:
-        path_url = f"/api/v2/peatio/markets/orders/{exchange_order_id}"
+        path_url = f"/api/v2/peatio/market/orders/{exchange_order_id}"
         return await self._api_request("get", path_url=path_url, is_auth_required=True)
 
     async def _update_order_status(self):
@@ -623,7 +633,7 @@ cdef class DexfinExchange(ExchangeBase):
                           is_buy: bool,
                           order_type: OrderType,
                           price: Decimal) -> str:
-        path_url = "/api/v2/peatio/markets/orders/"
+        path_url = "/api/v2/peatio/market/orders/"
         side = "buy" if is_buy else "sell"
         order_type_str = "limit" if order_type is OrderType.LIMIT_MAKER else "market"
         params = {
@@ -791,7 +801,7 @@ cdef class DexfinExchange(ExchangeBase):
             tracked_order = self._in_flight_orders.get(order_id)
             if tracked_order is None:
                 raise ValueError(f"Failed to cancel order - {order_id}. Order not found.")
-            path_url = f"/api/v2/peatio/markets/orders/{tracked_order.exchange_order_id}"
+            path_url = f"/api/v2/peatio/market/orders/{tracked_order.exchange_order_id}"
             await self._api_request("delete", path_url=path_url, is_auth_required=True)
         except Exception as e:
             self.logger().network(
@@ -806,7 +816,7 @@ cdef class DexfinExchange(ExchangeBase):
         return order_id
 
     async def cancel_all(self, timeout_seconds: float) -> List[CancellationResult]:
-        path_url = "/api/v2/peatio/markets/orders/cancel"
+        path_url = "/api/v2/peatio/market/orders/cancel"
         cancellation_results = []
         try:
             cancel_all_results = await self._api_request(
@@ -814,8 +824,8 @@ cdef class DexfinExchange(ExchangeBase):
                 path_url=path_url,
                 is_auth_required=True
             )
-            for oid in cancel_all_results["data"]["cancelledOrderIds"]:
-                cancellation_results.append(CancellationResult(oid, True))
+            for order in cancel_all_results:
+                cancellation_results.append(CancellationResult(order["id"], True))
         except Exception as e:
             self.logger().network(
                 f"Failed to cancel all orders.",

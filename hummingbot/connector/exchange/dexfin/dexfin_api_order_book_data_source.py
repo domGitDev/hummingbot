@@ -27,7 +27,7 @@ from hummingbot.connector.exchange.dexfin.dexfin_utils import convert_to_exchang
 
 SNAPSHOT_REST_URL = "https://test.dexfin.dev/api/v2/peatio/public/markets/{0}/depth"
 DIFF_STREAM_URL = "wss://test.dexfin.dev/api/v2/ranger/public/"
-TICKER_PRICE_CHANGE_URL = "https://test.dexfin.dev/api/v2/peatio/public/markets/{0}/tickers"
+TICKER_PRICE_CHANGE_URL = "https://test.dexfin.dev/api/v2/peatio/public/markets"
 EXCHANGE_INFO_URL = "https://test.dexfin.dev/api/v2/peatio/public/markets"
 
 
@@ -49,20 +49,28 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._order_book_create_function = lambda: OrderBook()
 
     @classmethod
-    async def get_last_traded_price(cls, trading_pair: str) -> float:
+    async def get_last_traded_prices(cls, trading_pairs: List[str]) -> Dict[str, float]:
+        results = dict()
         async with aiohttp.ClientSession() as client:
-            resp = await client.get(TICKER_PRICE_CHANGE_URL.format(convert_to_exchange_trading_pair(trading_pair)))
+            resp = await client.get(f"{TICKER_PRICE_CHANGE_URL}/tickers")
             resp_json = await resp.json()
-            return float(resp_json["ticker"]["last"])
+            for trading_pair in trading_pairs:
+                if trading_pair not in resp_json:
+                    continue
+                market = convert_to_exchange_trading_pair(trading_pair)
+                resp_record = resp_json[market]["tikcer"]
+                results[trading_pair] = float(resp_record["last"])
+        return results
 
     @staticmethod
     @cachetools.func.ttl_cache(ttl=10)
     def get_mid_price(trading_pair: str) -> Optional[Decimal]:
         from hummingbot.connector.exchange.dexfin.dexfin_utils import convert_to_exchange_trading_pair
 
-        resp = requests.get(url=TICKER_PRICE_CHANGE_URL.format(convert_to_exchange_trading_pair(trading_pair)))
+        market = convert_to_exchange_trading_pair(trading_pair)
+        resp = requests.get(url=f"{TICKER_PRICE_CHANGE_URL}/{market}/tickers")
         record = resp.json()
-        result = float(record["ticker"]["avg_price"])
+        result = Decimal(record["ticker"]["avg_price"])
         return result if result else None
 
     @staticmethod
@@ -89,9 +97,9 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     @staticmethod
     async def get_snapshot(client: aiohttp.ClientSession, trading_pair: str, limit: int = 1000) -> Dict[str, Any]:
-        params: Dict = {"limit": str(limit), "market": convert_to_exchange_trading_pair(trading_pair)} if limit != 0 \
-            else {"symbol": convert_to_exchange_trading_pair(trading_pair)}
-        async with client.get(SNAPSHOT_REST_URL.format(params["market"]), params=params) as response:
+        params: Dict = {"limit": str(limit)} if limit != 0 else {}
+        market = convert_to_exchange_trading_pair(trading_pair)
+        async with client.get(SNAPSHOT_REST_URL.format(market), params=params) as response:
             response: aiohttp.ClientResponse = response
             if response.status != 200:
                 raise IOError(f"Error fetching Dexfin market snapshot for {trading_pair}. "
@@ -105,8 +113,9 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
             return data
 
     async def get_new_order_book(self, trading_pair: str) -> OrderBook:
+        market = convert_to_exchange_trading_pair(trading_pair)
         async with aiohttp.ClientSession() as client:
-            snapshot: Dict[str, Any] = await self.get_snapshot(client, trading_pair, 1000)
+            snapshot: Dict[str, Any] = await self.get_snapshot(client, market, 1000)
             snapshot_timestamp: float = time.time()
             snapshot_msg: OrderBookMessage = DexfinOrderBook.snapshot_message_from_exchange(
                 snapshot,
@@ -148,15 +157,20 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
                 ws_path: str = "&".join([f"stream={trading_pair}.trades" for trading_pair in converted_pairs])
                 stream_url: str = f"{DIFF_STREAM_URL}?{ws_path}"
+                logging.info(f"Connecting to {stream_url}")
 
                 async with websockets.connect(stream_url) as ws:
                     ws: websockets.WebSocketClientProtocol = ws
                     async for raw_msg in self._inner_messages(ws):
                         msg = ujson.loads(raw_msg)
-                        market, topic = msg.keys()[0].split('.')
+                        market, topic = None
+                        for item in msg.items():
+                            if "trades" in item[0]:
+                                market, topic = item[0].split('.')
+                                break
                         for trade in msg[f"{market}.{topic}"][topic]:
                             trade_msg: OrderBookMessage = DexfinOrderBook.trade_message_from_exchange(
-                                trade, metadata={"symbol": market})
+                                trade, metadata={"trading_pair": market})
                             output.put_nowait(trade_msg)
             except asyncio.CancelledError:
                 raise
@@ -178,12 +192,18 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     ws: websockets.WebSocketClientProtocol = ws
                     async for raw_msg in self._inner_messages(ws):
                         msg = ujson.loads(raw_msg)
-                        market, topic = msg.keys()[0].split('.')
-                        if 'ob-snap' not in topic:
+                        market, topic = None, None
+                        for item in msg.items():
+                            if "ob-inc" in item[0]:
+                                market, topic = item[0].split('.')
+                                break
+                        if market is None or topic is None:
+                            continue
+                        if topic and 'ob-snap' not in topic:
                             continue
                         obook = msg[f"{market}.{topic}"]
                         order_book_message: OrderBookMessage = DexfinOrderBook.diff_message_from_exchange(
-                            obook, time.time(), metadata={"symbol": market})
+                            obook, time.time(), metadata={"trading_pair": market})
                         output.put_nowait(order_book_message)
             except asyncio.CancelledError:
                 raise
@@ -203,7 +223,7 @@ class DexfinAPIOrderBookDataSource(OrderBookTrackerDataSource):
                             snapshot_msg: OrderBookMessage = DexfinOrderBook.snapshot_message_from_exchange(
                                 snapshot,
                                 snapshot_timestamp,
-                                metadata={"symbol": trading_pair}
+                                metadata={"trading_pair": trading_pair}
                             )
                             output.put_nowait(snapshot_msg)
                             self.logger().debug(f"Saved order book snapshot for {trading_pair}")
